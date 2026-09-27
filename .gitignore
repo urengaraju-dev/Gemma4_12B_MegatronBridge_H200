@@ -1,0 +1,34 @@
+# --- secrets ---------------------------------------------------------------
+.hf_token
+*.token
+*.pem
+.env.local
+
+# --- run artifacts ---------------------------------------------------------
+logs/
+outputs/
+nemo_experiments/
+checkpoints/
+*.out
+wandb/
+tensorboard/
+
+# --- model / data caches ---------------------------------------------------
+.hf_cache/
+*.safetensors
+*.bin
+*.idx.parquet
+
+# --- python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# --- os / editor -----------------------------------------------------------
+.DS_Store
+.idea/
+.vscode/
+*.swp

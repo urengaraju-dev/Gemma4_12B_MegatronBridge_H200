@@ -1,93 +1,117 @@
-# Gemma4 12B MegatronBridge H200
+# Gemma-4-12B on NVIDIA Megatron-Bridge
 
+![Framework](https://img.shields.io/badge/Megatron--Bridge-0.6.1-76B900)
+![Container](https://img.shields.io/badge/NeMo-26.08-76B900)
+![CUDA](https://img.shields.io/badge/CUDA-13-76B900)
+![GPU](https://img.shields.io/badge/GPU-1%C3%97%20H200-76B900)
+![Phase 0](https://img.shields.io/badge/Phase%200%20(text)-parity%20%2B%20LoRA%20passing-brightgreen)
+![Phase 1](https://img.shields.io/badge/Phase%201%20(vision)-image%20parity%200.999-brightgreen)
 
+Adds **`google/gemma-4-12B`** support to **[NVIDIA Megatron-Bridge](https://github.com/NVIDIA-NeMo/Megatron-Bridge)**, which does not ship it out of the box.
 
-## Getting started
+`google/gemma-4-12B` is **`Gemma4UnifiedForConditionalGeneration`** — a 12 B **dense, encoder-free omni** model (text + vision + audio) on a new architecture that Megatron-Bridge's `AutoBridge` rejects (`ValueError: model architecture is not supported`). This repository implements and validates that support, incrementally:
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+| Phase | Scope | Status | Evidence |
+|---|---|---|---|
+| **0** | Text tower (LoRA/SFT) | ✅ **complete** | HF logit-parity **100 % top-1, cosine 0.9999**; 3-step LoRA smoke (loss 1.86→1.12) |
+| **1** | + Vision (image) | ✅ **working** | Vision embedder **bit-exact vs HF**; image-conditioned parity **image 0.999 / text 0.975** |
+| **2** | + Audio | ⏳ planned | single Linear projector on the Phase-1 scaffold |
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+Built and validated end-to-end on a single **NVIDIA H200** (143 GB), container `nvcr.io/nvidia/nemo:26.08` (Megatron-Bridge 0.6.1, Megatron-Core 0.19.1, CUDA 13).
 
-## Add your files
+---
 
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/ee/gitlab-basics/add-file.html#add-a-file-using-the-command-line) or push an existing Git repository with the following command:
+## Why this is small (and why it works)
+
+Megatron-Bridge already ships a complete **Gemma-4 dense text stack** (`Gemma4DenseProvider` + `gemma4_bridge`: dual/proportional RoPE, 5:1 sliding/full interleave, per-layer head dims, K=V attention, `layer_scalar`, logit softcap) and a **MIMO** multimodal framework. So the delta for the Unified variant is a **thin fork**, not a from-scratch port:
+
+- **Phase 0** = register one bridge for `Gemma4UnifiedForConditionalGeneration` that reads the nested `text_config` and points the HF weight prefix at `model.language_model.` — everything else is inherited. `src/gemma4_unified_bridge.py` (~30 lines).
+- **Phase 1** = an encoder-free vision embedder (`src/gemma4_vision_projector.py`), a bidirectional vision attention mask (`src/gemma4_vision_mask.py`), and a small VL wrapper that merges vision soft tokens into the LM embedding stream (`src/gemma4_unified_vl.py`).
+
+See [`docs/DESIGN.md`](docs/DESIGN.md) for the full story, including the two subtle bugs that were found and fixed via layer-wise parity diffing.
+
+## Repository layout
 
 ```
-cd existing_repo
-git remote add origin https://gitlab-master.nvidia.com/flipkartgroup/Gemma4_12B_MegatronBridge_H200.git
-git branch -M main
-git push -uf origin main
+.
+├── README.md · LICENSE · CHANGELOG.md · CONTRIBUTING.md · Makefile · .gitignore
+├── src/
+│   ├── gemma4_unified_bridge.py     # Phase 0: text bridge (register + provider, reuses Gemma4 dense)
+│   ├── gemma4_vision_projector.py   # Phase 1: encoder-free vision embedder (bit-exact vs HF)
+│   ├── gemma4_vision_mask.py        # Phase 1: bidirectional vision attention mask (softmax injection)
+│   └── gemma4_unified_vl.py         # Phase 1: Gemma4UnifiedVLModel (text+vision merge) + runnable smoke
+├── tests/                           # parity & smoke harnesses (the evidence)
+│   ├── test_phase0.py               # build the 12B text model + forward (no weight download)
+│   ├── parity_g4.py                 # Phase 0: HF vs Megatron logit parity
+│   ├── train_lora_g4.py             # Phase 0: 3-step LoRA finetune smoke
+│   ├── test_vision_parity.py        # Phase 1: vision embedder vs HF get_image_features (bit-exact)
+│   ├── test_mask_diff.py            # Phase 1: my mask vs HF's actual per-layer mask
+│   ├── phase1_parity.py             # Phase 1: image-conditioned HF logit parity
+│   ├── test_hidden_diff.py          # locator: merged-embedding diff (found the text-scale bug)
+│   └── test_layer_diff.py           # locator: per-layer hidden-state diff (bf16 characterization)
+├── scripts/setup.sh                 # provision container + weights
+└── docs/DESIGN.md · docs/FEASIBILITY.md · docs/results/
 ```
 
-## Integrate with your tools
+## Requirements
 
-- [ ] [Set up project integrations](https://gitlab-master.nvidia.com/flipkartgroup/Gemma4_12B_MegatronBridge_H200/-/settings/integrations)
+- 1× NVIDIA H200 (or any ≥ 48 GB CUDA-13 GPU for LoRA/parity).
+- Docker with the NVIDIA runtime.
+- Container `nvcr.io/nvidia/nemo:26.08`.
+- A HuggingFace token for an account that has **accepted the Gemma license** at
+  <https://huggingface.co/google/gemma-4-12B> (put it in `~/.hf_token` or `HF_TOKEN`).
 
-## Collaborate with your team
+## Quickstart
 
-- [ ] [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-- [ ] [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-- [ ] [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-- [ ] [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-- [ ] [Set auto-merge](https://docs.gitlab.com/ee/user/project/merge_requests/merge_when_pipeline_succeeds.html)
+```bash
+# 1. Provision: pull the container, download weights, start the container (idempotent)
+bash scripts/setup.sh
 
-## Test and Deploy
+# 2. Phase 0 — HF logit parity (text)
+docker exec mb torchrun --nproc-per-node=1 /workspace/tests/parity_g4.py
 
-Use the built-in continuous integration in GitLab.
+# 3. Phase 0 — LoRA finetune smoke
+docker exec mb torchrun --nproc-per-node=1 /workspace/tests/train_lora_g4.py
 
-- [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/index.html)
-- [ ] [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-- [ ] [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-- [ ] [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-- [ ] [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
+# 4. Phase 1 — vision embedder parity + image-conditioned parity
+docker exec mb python  /workspace/tests/test_vision_parity.py
+docker exec -e APPLY_ALL=1 mb torchrun --nproc-per-node=1 /workspace/tests/phase1_parity.py
+```
 
-***
+(The container mounts the repo at `/workspace`; see `scripts/setup.sh`.)
 
-# Editing this README
+## Validated results
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+**Phase 0 — text (`parity_g4.py`):**
+```
+loading HuggingFace-format checkpoint from .../gemma-4-12B   (real HF→Megatron conversion, 530 tensors)
+max|Δ| 0.44 | cosine 0.999931 | top-1 agreement 100%   → PASS
+```
 
-## Suggestions for a good README
+**Phase 0 — LoRA (`train_lora_g4.py`):** 3 iters, lm loss 1.86 → 1.12, no NaNs, `torch_dist` checkpoint saved.
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+**Phase 1 — vision embedder (`test_vision_parity.py`):** `cosine 1.000000, max|Δ| 0.0000` vs HF `get_image_features`.
 
-## Name
-Choose a self-explaining name for your project.
+**Phase 1 — image-conditioned (`phase1_parity.py`):**
+```
+image-position cosine 0.99869   (bit-exact)
+text-position  cosine 0.975, top-1 83%   (bf16-limited; see DESIGN §Residual)
+```
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+## Known limitations / follow-ups
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+- **bf16 text residual** (0.975, not ~0.99): identified as bf16 accumulation across 48 layers (gradual, no discrete bug; image path bit-exact). TE kernels are bf16/fp16-only, so fp32 isn't available to close it.
+- **`Gemma4DenseProvider` is PP=1 only** — multi-GPU is TP/DP on one node; pipeline parallel needs provider work.
+- **Single-GPU VL wrapper**: `Gemma4UnifiedVLModel` is a pragmatic wrapper; folding it into the `MegatronMIMOProvider` + `megatron_mimo_step` (and adding the vision weights to the bridge mapping registry) is the productionization step.
+- **Phase 2 (audio)** — one Linear projector (`model.embed_audio.embedding_projection`, 640→3840) on the existing merge scaffold.
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+## References
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
-
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
-
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+- Megatron-Bridge — <https://github.com/NVIDIA-NeMo/Megatron-Bridge>
+- NeMo Framework container — `nvcr.io/nvidia/nemo:26.08`
+- `google/gemma-4-12B` — <https://huggingface.co/google/gemma-4-12B>
 
 ## License
-For open source projects, say how it is licensed.
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+Apache-2.0 — see [LICENSE](LICENSE). Gemma weights are governed by the
+[Gemma Terms of Use](https://ai.google.dev/gemma/terms); accept them on Hugging Face to download.
